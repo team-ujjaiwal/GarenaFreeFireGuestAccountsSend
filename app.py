@@ -14,20 +14,24 @@ from google.protobuf.message import DecodeError
 
 app = Flask(__name__)
 
-def load_tokens(server_name):
+async def fetch_tokens(server_name):
     try:
         if server_name == "IND":
-            with open("token_ind.json", "r") as f:
-                tokens = json.load(f)
+            url = "https://garenafreefireind-1-tokengenerator.vercel.app/token"
         elif server_name in {"BR", "US", "SAC", "NA"}:
-            with open("token_br.json", "r") as f:
-                tokens = json.load(f)
+            url = "https://garenafreefirena-1-tokengenerator.vercel.app/token"
         else:
-            with open("token_bd.json", "r") as f:
-                tokens = json.load(f)
-        return tokens
+            url = "https://garenafreefiresg-1-tokengenerator.vercel.app/token"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    app.logger.error(f"Failed to fetch tokens for {server_name}, status: {response.status}")
+                    return None
+                data = await response.json()
+                return data.get('tokens', [])
     except Exception as e:
-        app.logger.error(f"Error loading tokens for server {server_name}: {e}")
+        app.logger.error(f"Error fetching tokens for server {server_name}: {e}")
         return None
 
 def encrypt_message(plaintext):
@@ -88,12 +92,11 @@ async def send_multiple_requests(uid, server_name, url):
             app.logger.error("Encryption failed.")
             return None
         tasks = []
-        tokens = load_tokens(server_name)
-        if tokens is None:
-            app.logger.error("Failed to load tokens.")
+        tokens = await fetch_tokens(server_name)
+        if not tokens:
+            app.logger.error("Failed to fetch tokens.")
             return None
-        for i in range(100):
-            token = tokens[i % len(tokens)]["token"]
+        for token in tokens:
             tasks.append(send_request(encrypted_uid, token, url))
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return results
@@ -164,21 +167,21 @@ def decode_protobuf(binary):
 @app.route('/like', methods=['GET'])
 def handle_requests():
     uid = request.args.get("uid")
-    server_name = request.args.get("region", "").upper()
+    server_name = request.args.get("server", "").upper()
     key = request.args.get("key")
 
     if not uid or not server_name or not key:
         return jsonify({"error": "UID, region, and key are required"}), 400
 
-    if key != "permanentskeysforujjaiwal":
+    if key != "1yearkeysforujjaiwal":
         return jsonify({"error": "Invalid API key"}), 403
 
     try:
-        def process_request():
-            tokens = load_tokens(server_name)
-            if tokens is None:
-                raise Exception("Failed to load tokens.")
-            token = tokens[0]['token']
+        async def process_request():
+            tokens = await fetch_tokens(server_name)
+            if not tokens:
+                raise Exception("Failed to fetch tokens.")
+            token = tokens[0]
             encrypted_uid = enc(uid)
             if encrypted_uid is None:
                 raise Exception("Encryption of UID failed.")
@@ -205,7 +208,7 @@ def handle_requests():
             else:
                 url = "https://clientbp.ggblueshark.com/LikeProfile"
 
-            asyncio.run(send_multiple_requests(uid, server_name, url))
+            await send_multiple_requests(uid, server_name, url)
 
             after = make_request(encrypted_uid, server_name, token)
             if after is None:
@@ -230,7 +233,7 @@ def handle_requests():
             }
             return result
 
-        result = process_request()
+        result = asyncio.run(process_request())
         return jsonify(result)
     except Exception as e:
         app.logger.error(f"Error processing request: {e}")
